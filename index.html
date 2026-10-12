@@ -549,7 +549,7 @@ async function sendLink(ev) {
   msg.textContent = error ? error.message : "Check " + email + " for a sign-in link. Open it on this device.";
   if (error) btn.disabled = false;
 }
-async function signOut() { await S.db.auth.signOut(); S.me = { id: null, canEdit: false, canWrite: null }; await load(); go("home"); toast("Signed out"); }
+async function signOut() { forgetUsed(); await S.db.auth.signOut(); S.me = { id: null, canEdit: false, canWrite: null }; await load(); go("home"); toast("Signed out"); }
 
 function norm(p, corr) {
   return { id: p.id, raw: p.status, status: p.status === "unpublished_by_editor" ? "unpublished" : p.status === "unpublished_by_writer" ? "published" : p.status,
@@ -558,6 +558,22 @@ function norm(p, corr) {
     publishedAt: ts(p.published_at), submittedAt: ts(p.submitted_at), unpublishedAt: ts(p.unpublished_at),
     hasImage: !!p.image_path, image: imageUrl(p.image_path), imagePath: p.image_path, imageAlt: p.image_alt, imageCredit: p.image_credit, imageAI: p.image_ai,
     note: p.editor_note, republishAsk: p.republish_requested, corrections: corr[p.id] || [], future: !!p.future };
+}
+// A device that has not used FTPC for a while is signed out the next time it opens the site:
+// after 30 days, or 7 days for the editor's account (it can publish and remove pieces).
+// The time of last use is kept only in this browser ("ftpc-last-used").
+const IDLE_KEY = "ftpc-last-used";
+function markUsed() { try { localStorage.setItem(IDLE_KEY, String(Date.now())); } catch (e) {} }
+function forgetUsed() { try { localStorage.removeItem(IDLE_KEY); } catch (e) {} }
+async function idleTooLong(sb, role) {
+  let last = 0; try { last = Number(localStorage.getItem(IDLE_KEY)) || 0; } catch (e) { return false; }
+  const days = role === "editor" ? 7 : 30;
+  if (last && Date.now() - last > days * 86400000) {
+    forgetUsed(); await sb.auth.signOut();
+    toast("You were signed out after " + days + " days without using FTPC on this device. Sign in again any time.");
+    return true;
+  }
+  markUsed(); return false;
 }
 async function load() {
   const sb = S.db;
@@ -572,6 +588,7 @@ async function load() {
   const people = {}; for (const p of pf.data) people[p.id] = p;
   if (uid) { const mine = await sb.rpc("my_profile"); for (const p of (mine.data || [])) people[p.id] = Object.assign({}, people[p.id], p); }
   const myRole = (uid && people[uid] && people[uid].role) || "reader";
+  if (uid && await idleTooLong(sb, myRole)) return load();
   if (myRole === "editor") { const every = await sb.rpc("desk_profiles"); for (const p of (every.data || [])) people[p.id] = Object.assign({}, people[p.id], p); }
   S.requests = {}; S.writers = {};
   for (const p of Object.values(people)) {
@@ -972,6 +989,7 @@ async function closeReport(r) { await act(S.db.from("reports").update({ handled:
 async function start() {
   const token = location.hash.replace(/^#/, "");
   S.route = /^(access_token|error|code)=/.test(token) ? { view: "home" } : parse(token);
+  if (/^(access_token|code)=/.test(token) || /[?&]code=/.test(location.search)) markUsed();   // arriving from a sign-in link counts as use
   render(true);
   if (!window.supabase) { S.loadError = "the sign-in and data library did not load"; render(true); return; }
   S.db = window.supabase.createClient(SUPA_URL, SUPA_KEY);
