@@ -78,10 +78,8 @@ h1, h2, h3 { text-wrap: balance; margin: 0; line-height: 1.12; letter-spacing: -
 .conveyor .ch { font-weight: 700; font-size: 17px; line-height: 1.25; text-decoration: none }
 .conveyor .ch:hover { text-decoration: underline }
 .conveyor .cd { color: var(--ink-2); font-size: 14px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden }
-.belt { animation: belt linear infinite }
-@keyframes belt { to { transform: translateY(-50%) } }
-.conveyor .window:hover .belt, .conveyor .window:focus-within .belt { animation-play-state: paused }
-@media (prefers-reduced-motion: reduce) { .belt { animation: none } .conveyor .window.moving { overflow-y: auto } }
+.conveyor .window.moving { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none }
+.conveyor .window.moving::-webkit-scrollbar { display: none }
 .av { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; flex: none; display: inline-grid; place-items: center; background: var(--line); color: var(--ink); font-weight: 700; font-size: 15px }
 .av.lg { width: 48px; height: 48px; font-size: 19px }
 .av.xl { width: 96px; height: 96px; font-size: 36px }
@@ -783,15 +781,49 @@ function bylineBlock(a) {
   const id = a.authorId; if (!id || a.sample) return null; const r = S.requests[id] || {};
   return h("div", { class: "byl" }, avatar(id, "lg"), h("div", null, link("w-" + id, byline(a)), h("div", { class: "meta" }, handleOf(id) && h("span", null, handleOf(id)), r.verified && h("span", { class: "tag" }, "Verified by FTPC"))));
 }
+// The Latest list moves up slowly on its own. Readers can also scroll it with the mouse wheel,
+// a trackpad or a finger; it pauses while the pointer is over it, and carries on a few seconds
+// after they stop. It loops without a jump (the list is laid out twice) and keeps its place
+// when the page refreshes. People who ask their device for less motion get a still list they can scroll.
+const BELT_AT = {};
+function runBelt(win, ol, secs, key) {
+  const li = ol.children; const n = li.length / 2;
+  const loop = () => (li[n] ? li[n].offsetTop - li[0].offsetTop : 0);
+  let h = loop(); if (h <= 0) return;
+  let pos = (key in BELT_AT ? BELT_AT[key] : ((Date.now() / 1000) % secs) / secs) * h;
+  let mine = -1;   // the last position set by the loop itself, to tell it apart from a reader's scroll
+  const put = (y) => { pos = y; win.scrollTop = y; mine = win.scrollTop; BELT_AT[key] = h ? pos / h : 0; };
+  put(pos);
+  let over = false, touching = false, restAt = 0; const rest = () => { restAt = performance.now() + 3000; };
+  win.addEventListener("mouseenter", () => { over = true; }); win.addEventListener("mouseleave", () => { over = false; rest(); });
+  win.addEventListener("focusin", () => { over = true; }); win.addEventListener("focusout", () => { over = false; });
+  win.addEventListener("touchstart", () => { touching = true; }, { passive: true }); win.addEventListener("touchend", () => { touching = false; rest(); }, { passive: true });
+  win.addEventListener("wheel", rest, { passive: true });
+  win.addEventListener("scroll", () => {
+    if (Math.abs(win.scrollTop - mine) < 2) return;   // the loop's own move
+    h = loop() || h;
+    if (win.scrollTop >= h) put(win.scrollTop - h); else if (win.scrollTop <= 0) put(h - 1); else put(win.scrollTop);
+    rest();
+  }, { passive: true });
+  if (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  let last = performance.now();
+  const tick = (t) => {
+    if (!win.isConnected) return;
+    const dt = Math.min(0.1, (t - last) / 1000); last = t;
+    if (!over && !touching && t > restAt && !document.hidden) { h = loop() || h; let y = pos + (h / secs) * dt; if (y >= h) y -= h; put(y); }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
 function conveyor(list, title) {
   if (!list.length) return null; const moving = list.length >= 4; const secs = list.length * 6;
   const row = (a, dup) => h("li", { class: "s-" + a.section, "aria-hidden": dup ? "true" : null }, h("span", { class: "meta" }, h("span", { class: "sec" }, SECTIONS[a.section] ? SECTIONS[a.section].name : ""), h("span", null, whenTime(a.publishedAt))),
     h("a", { href: "#a-" + a.id, "data-go": "a-" + a.id, class: "ch", tabindex: dup ? "-1" : null }, a.title), a.dek && h("span", { class: "cd" }, a.dek));
   // The list is laid out twice and slides up by half its height, so it loops without a jump. The clock keeps its place across page refreshes.
-  const ol = h("ol", { class: moving ? "belt" : null, style: moving ? "animation-duration:" + secs + "s;animation-delay:-" + ((Date.now() / 1000) % secs).toFixed(2) + "s" : null }, list.map((a) => row(a)), moving && list.map((a) => row(a, true)));
+  const ol = h("ol", { class: moving ? "belt" : null }, list.map((a) => row(a)), moving && list.map((a) => row(a, true)));
   const win = h("div", { class: "window" + (moving ? " moving" : "") }, ol);
   // The window is sized to show three pieces at a time.
-  if (moving) requestAnimationFrame(() => { const li = ol.children; if (li.length > 3 && li[3].offsetTop > li[0].offsetTop) win.style.height = (li[3].offsetTop - li[0].offsetTop) + "px"; });
+  if (moving) requestAnimationFrame(() => { const li = ol.children; if (li.length > 3 && li[3].offsetTop > li[0].offsetTop) win.style.height = (li[3].offsetTop - li[0].offsetTop) + "px"; runBelt(win, ol, secs, title); });
   return h("aside", { class: "conveyor", "aria-label": title }, h("h2", null, title), win);
 }
 function deskCommentReports(q) {
